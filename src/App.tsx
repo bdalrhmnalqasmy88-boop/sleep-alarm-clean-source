@@ -41,6 +41,51 @@ export default function App() {
     localStorage.setItem('sleep_custom_sound', JSON.stringify(value));
   }, []);
 
+  // Restore the active alarm after the app is closed/reopened.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('sleep_active_alarm');
+      if (!saved) return;
+
+      const data = JSON.parse(saved);
+
+      if (!data.firstAlarmAt || !data.finalAlarmAt) return;
+
+      const first = new Date(data.firstAlarmAt);
+      const final = new Date(data.finalAlarmAt);
+      const current = new Date();
+
+      if (Number.isNaN(first.getTime()) || Number.isNaN(final.getTime())) return;
+
+      setFirstAlarmAt(first);
+      setFinalAlarmAt(final);
+
+      if (data.wakeTime) {
+        setWakeTime(data.wakeTime);
+      }
+
+      if (typeof data.selectedCycles === 'number') {
+        setSelectedCycles(data.selectedCycles);
+      }
+
+      if (data.sessionId) {
+        setSessionId(data.sessionId);
+      }
+
+      if (current.getTime() >= final.getTime()) {
+        setPhase('done');
+        localStorage.removeItem('sleep_active_alarm');
+      } else if (current.getTime() >= first.getTime()) {
+        setPhase('slept');
+      } else {
+        setPhase('armed');
+      }
+    } catch (error) {
+      console.error('Failed to restore active alarm:', error);
+      localStorage.removeItem('sleep_active_alarm');
+    }
+  }, []);
+
   // load history and prepare the native alarm channel
   useEffect(() => {
     setHistory(loadHistory());
@@ -127,6 +172,19 @@ export default function App() {
     saveSession(session);
     setSessionId(session.id);
     setHistory(loadHistory());
+
+    // Persist the active alarm so its countdown/state can be restored
+    // when the app is opened again after being closed.
+    localStorage.setItem(
+      'sleep_active_alarm',
+      JSON.stringify({
+        firstAlarmAt: selectedOption.bedtime.toISOString(),
+        finalAlarmAt: selectedOption.wakeTime.toISOString(),
+        wakeTime,
+        selectedCycles: selectedOption.cycles,
+        sessionId: session.id,
+      })
+    );
   }, [selectedOption, wakeTime, arm, sound, volume, customSound]);
 
   const handleDismissFirst = useCallback(async () => {
@@ -142,6 +200,7 @@ export default function App() {
     dismissFinal();
     setPhase('done');
     await cancelAllAlarms();
+    localStorage.removeItem('sleep_active_alarm');
     if (sessionId) {
       updateSession(sessionId, { completed: true });
       setHistory(loadHistory());
@@ -156,6 +215,7 @@ export default function App() {
     setSessionId(null);
     setSelectedCycles(0);
     await cancelAllAlarms();
+    localStorage.removeItem('sleep_active_alarm');
   }, [reset]);
 
   const countdownToFirst = firstAlarmAt ? firstAlarmAt.getTime() - now.getTime() : 0;
