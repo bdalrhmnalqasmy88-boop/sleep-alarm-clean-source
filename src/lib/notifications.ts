@@ -1,4 +1,5 @@
 import type { SleepSession } from './storage';
+import { NativeAlarmSound, isNativePlatform } from './nativeAlarmSound';
 
 type AlarmConfig = {
   id: number;
@@ -22,54 +23,61 @@ async function getLocalNotifications() {
   }
 }
 
-export async function initializeNotifications(): Promise<void> {
-  const LocalNotifications = await getLocalNotifications();
-  if (!LocalNotifications) return;
+async function hasNativeAlarm(): Promise<boolean> {
+  if (!isNativePlatform()) return false;
   try {
-    const { NativeAlarmSound } = await import('./nativeAlarmSound');
-    await NativeAlarmSound.configureChannel({ channelId: 'alarm-channel' });
+    // Any resolving call proves the native plugin is registered.
+    await NativeAlarmSound.canScheduleExactAlarms();
+    return true;
   } catch {
+    return false;
+  }
+}
+
+export async function initializeNotifications(): Promise<void> {
+  if (!isCapacitor) return;
+
+  // Ask for the exact-alarm permission up front (Android 12+) so the alarm
+  // can fire precisely even in Doze / when the app is closed.
+  if (await hasNativeAlarm()) {
     try {
-      await LocalNotifications.createChannel({
-        id: 'alarm-channel',
-        name: 'Sleep alarms',
-        description: 'Sleep Cycle Alarm notifications',
-        importance: 5,
-        sound: undefined,
-        vibration: true,
-      });
+      const { value } = await NativeAlarmSound.canScheduleExactAlarms();
+      if (!value) await NativeAlarmSound.requestExactAlarmPermission();
     } catch {
-      // channel may already exist
+      // ignore — scheduling falls back to inexact automatically
     }
   }
-}
 
-export async function configureAlarmChannel(soundUri?: string): Promise<string> {
-  const channelId = soundUri
-    ? `alarm-channel-${Array.from(soundUri).reduce((hash, char) => ((hash * 31 + char.charCodeAt(0)) | 0), 0).toString(36).replace('-', 'n')}`
-    : 'alarm-channel';
-
-  try {
-    const { NativeAlarmSound } = await import('./nativeAlarmSound');
-    const result = await NativeAlarmSound.configureChannel({ channelId, soundUri });
-    return result.channelId;
-  } catch {
-    // Fall back to the standard notification channel if the native plugin is unavailable.
-  }
-  return 'alarm-channel';
-}
-
-export async function scheduleAlarm(config: AlarmConfig): Promise<void> {
   const LocalNotifications = await getLocalNotifications();
   if (!LocalNotifications) return;
-
-  const channelId = await configureAlarmChannel(config.soundUri);
   try {
     await LocalNotifications.requestPermissions();
   } catch {
     // permissions may already be granted
   }
+}
 
+export async function scheduleAlarm(config: AlarmConfig): Promise<void> {
+  // Preferred path: native AlarmManager exact alarm + foreground ringing service.
+  if (await hasNativeAlarm()) {
+    try {
+      await NativeAlarmSound.scheduleAlarm({
+        id: config.id,
+        at: config.at.getTime(),
+        title: config.title,
+        body: config.body,
+        soundUri: config.soundUri,
+        volume: config.volume,
+      });
+      return;
+    } catch {
+      // fall through to local-notification fallback
+    }
+  }
+
+  // Fallback: local notification (older/other platforms).
+  const LocalNotifications = await getLocalNotifications();
+  if (!LocalNotifications) return;
   try {
     await LocalNotifications.schedule({
       notifications: [
@@ -77,11 +85,10 @@ export async function scheduleAlarm(config: AlarmConfig): Promise<void> {
           id: config.id,
           title: config.title,
           body: config.body,
-          schedule: { at: config.at },
-          sound: undefined,
+          schedule: { at: config.at, allowWhileIdle: true },
           smallIcon: 'ic_stat_icon',
           largeIcon: 'ic_launcher',
-          channelId,
+          channelId: 'alarm-channel',
           ongoing: true,
         },
       ],
@@ -92,6 +99,13 @@ export async function scheduleAlarm(config: AlarmConfig): Promise<void> {
 }
 
 export async function cancelAlarm(id: number): Promise<void> {
+  if (await hasNativeAlarm()) {
+    try {
+      await NativeAlarmSound.cancelAlarm({ id });
+    } catch {
+      // ignore
+    }
+  }
   const LocalNotifications = await getLocalNotifications();
   if (!LocalNotifications) return;
   try {
@@ -102,6 +116,13 @@ export async function cancelAlarm(id: number): Promise<void> {
 }
 
 export async function cancelAllAlarms(): Promise<void> {
+  if (await hasNativeAlarm()) {
+    try {
+      await NativeAlarmSound.stopAlarm();
+    } catch {
+      // ignore
+    }
+  }
   const LocalNotifications = await getLocalNotifications();
   if (!LocalNotifications) return;
   try {
@@ -113,6 +134,17 @@ export async function cancelAllAlarms(): Promise<void> {
     }
   } catch {
     // ignore
+  }
+}
+
+/** Stop the currently ringing native alarm (sound + foreground service). */
+export async function stopRingingAlarm(): Promise<void> {
+  if (await hasNativeAlarm()) {
+    try {
+      await NativeAlarmSound.stopAlarm();
+    } catch {
+      // ignore
+    }
   }
 }
 
