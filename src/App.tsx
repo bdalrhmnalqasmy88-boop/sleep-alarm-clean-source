@@ -15,7 +15,7 @@ import {
 } from '@/lib/sleep';
 import { loadHistory, saveSession, updateSession, genId, type SleepSession } from '@/lib/storage';
 import { initializeNotifications, scheduleAlarm, cancelAlarm, cancelAllAlarms } from '@/lib/notifications';
-import type { PickedAudio } from '@/lib/nativeAlarmSound';
+import { NativeAlarmSound, isNativePlatform, type PickedAudio } from '@/lib/nativeAlarmSound';
 
 type Phase = 'setup' | 'armed' | 'ringing' | 'slept' | 'final-ringing' | 'done';
 
@@ -91,6 +91,33 @@ export default function App() {
     setHistory(loadHistory());
     void initializeNotifications();
   }, []);
+
+  // Native: if the OS-level alarm is currently ringing (e.g. the full-screen
+  // alarm just launched the app), reflect it in the UI so the user gets a Stop
+  // button. The sound itself is handled by the native foreground service.
+  useEffect(() => {
+    if (!isNativePlatform()) return;
+    const syncRinging = async () => {
+      try {
+        const { ringing } = await NativeAlarmSound.isRinging();
+        if (!ringing) return;
+        const t = Date.now();
+        if (finalAlarmAt && t >= finalAlarmAt.getTime() - 1000) {
+          setPhase('final-ringing');
+        } else {
+          setPhase('ringing');
+        }
+      } catch {
+        // ignore
+      }
+    };
+    void syncRinging();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void syncRinging();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [finalAlarmAt]);
 
   // live clock
   useEffect(() => {
